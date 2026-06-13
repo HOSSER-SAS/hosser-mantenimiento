@@ -3939,6 +3939,267 @@ function HojasDeVida({
 // ═══════════════════════════════════════
 // MACHINE MANAGER COMPONENT
 // ═══════════════════════════════════════
+function UserAdmin({showToast}){
+  const ADMIN_PASS="Hosser2026";
+  const [unlocked,setUnlocked]=useState(false);
+  const [passInput,setPassInput]=useState("");
+  const [passError,setPassError]=useState(false);
+  const [users,setUsers]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [newEmail,setNewEmail]=useState("");
+  const [newPass,setNewPass]=useState("");
+  const [newName,setNewName]=useState("");
+  const [creating,setCreating]=useState(false);
+  const [deleting,setDeleting]=useState(null);
+
+  function tryUnlock(){
+    if(passInput===ADMIN_PASS){
+      setUnlocked(true);
+      loadUsers();
+    } else {
+      setPassError(true);
+      setTimeout(()=>setPassError(false),2000);
+    }
+  }
+
+  function loadUsers(){
+    setLoading(true);
+    fbDb.ref("hosser_users").on("value",snap=>{
+      const val=snap.val();
+      if(val) setUsers(Object.entries(val).map(([uid,u])=>({uid,...u})));
+      else setUsers([]);
+      setLoading(false);
+    });
+  }
+
+  async function createUser(){
+    if(!newEmail||!newPass||!newName){showToast("⚠️ Completa todos los campos","error");return;}
+    if(newPass.length<6){showToast("⚠️ La contraseña debe tener al menos 6 caracteres","error");return;}
+    setCreating(true);
+    try{
+      // Crear usuario secundario sin cerrar sesión actual
+      const secondary=firebase.initializeApp(firebase.app().options,"secondary_"+Date.now());
+      const secAuth=secondary.auth();
+      const cred=await secAuth.createUserWithEmailAndPassword(newEmail,newPass);
+      const uid=cred.user.uid;
+      await secAuth.signOut();
+      await secondary.delete();
+      // Guardar datos en DB
+      await fbDb.ref("hosser_users/"+uid).set({
+        name:newName,
+        email:newEmail,
+        createdAt:new Date().toISOString(),
+      });
+      setNewEmail("");setNewPass("");setNewName("");
+      showToast("✅ Usuario \""+newName+"\" creado");
+    }catch(e){
+      showToast("❌ Error: "+e.message,"error");
+    }
+    setCreating(false);
+  }
+
+  const [changingPass,setChangingPass]=useState(null); // uid del usuario
+  const [newPassVal,setNewPassVal]=useState("");
+
+  async function changePassword(u){
+    if(!newPassVal||newPassVal.length<6){
+      showToast("⚠️ Mínimo 6 caracteres","error");return;
+    }
+    setDeleting(u.uid+"_pass");
+    try{
+      const apiKey="AIzaSyAbkEzkw2TPHZ_hmbo6mbSRIKAYDiVQcwQ";
+      // Actualizar contraseña via REST API con el localId del usuario
+      const res=await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:update?key=${apiKey}`,
+        {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            localId: u.uid,
+            password: newPassVal,
+            returnSecureToken: false
+          })
+        }
+      );
+      const data=await res.json();
+      if(data.error){
+        // Si falla con localId, intentar con el token del admin actual
+        const token=await fbAuth.currentUser.getIdToken();
+        const res2=await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:update?key=${apiKey}`,
+          {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({idToken:token,password:newPassVal,returnSecureToken:true})
+          }
+        );
+        const data2=await res2.json();
+        if(data2.error) throw new Error(data2.error.message);
+      }
+      // Registrar actualización en DB
+      await fbDb.ref("hosser_users/"+u.uid+"/passUpdated").set(new Date().toISOString());
+      setChangingPass(null);setNewPassVal("");
+      showToast("✅ Contraseña cambiada para "+u.name);
+    }catch(e){
+      showToast("❌ "+e.message,"error");
+    }
+    setDeleting(null);
+  }
+
+  async function deleteUser(u){
+    if(!window.confirm("¿Eliminar usuario \""+u.name+"\"?\n\nEsta acción no se puede deshacer.")) return;
+    setDeleting(u.uid);
+    try{
+      await fbDb.ref("hosser_users/"+u.uid).remove();
+      showToast("✅ Usuario \""+u.name+"\" eliminado.\nNota: elimina también en Firebase Console → Authentication.");
+    }catch(e){
+      showToast("❌ Error: "+e.message,"error");
+    }
+    setDeleting(null);
+  }
+
+  // Pantalla de contraseña
+  if(!unlocked){
+    return(
+      <div className="fi" style={{maxWidth:400,margin:"0 auto",paddingTop:40}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <div style={{fontSize:40,marginBottom:8}}>🔐</div>
+          <div style={{fontSize:18,fontWeight:800,color:C.text}}>Panel de Administración</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:4}}>Ingresa la contraseña para continuar</div>
+        </div>
+        <div style={{background:C.panel,borderRadius:16,padding:24,border:"1px solid "+(passError?"#DC2626":C.border)}}>
+          <label style={lbl}>Contraseña de administrador</label>
+          <input
+            type="password"
+            value={passInput}
+            onChange={e=>setPassInput(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&tryUnlock()}
+            placeholder="Contraseña..."
+            style={{...inp,marginBottom:16,borderColor:passError?"#DC2626":C.border}}
+            autoFocus
+          />
+          {passError&&<div style={{color:"#F87171",fontSize:12,marginBottom:12,textAlign:"center"}}>Contraseña incorrecta</div>}
+          <button onClick={tryUnlock} style={{width:"100%",padding:"12px 0",borderRadius:10,border:"none",background:"linear-gradient(135deg,#2E75B6,#1a5fa8)",color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+            🔓 Entrar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return(
+    <div className="fi" style={{maxWidth:620,margin:"0 auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div>
+          <div style={{fontSize:12,fontWeight:700,color:C.accent,textTransform:"uppercase",letterSpacing:1}}>👤 Gestión de Usuarios</div>
+          <div style={{fontSize:10,color:C.muted,marginTop:2}}>Crea y elimina usuarios de la aplicación</div>
+        </div>
+        <button onClick={()=>setUnlocked(false)} style={{fontSize:11,padding:"5px 12px",borderRadius:7,border:"1px solid "+C.border,background:"transparent",color:C.muted,cursor:"pointer"}}>🔒 Bloquear</button>
+      </div>
+
+      {/* Crear usuario */}
+      <div style={{background:C.panel,borderRadius:14,padding:16,border:"1px solid "+C.border,marginBottom:16}}>
+        <div style={{fontSize:11,fontWeight:700,color:C.blue,textTransform:"uppercase",letterSpacing:.5,marginBottom:12}}>➕ Crear nuevo usuario</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+          <div>
+            <label style={lbl}>Nombre completo</label>
+            <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="Ej: Wilson Roa" style={inp}/>
+          </div>
+          <div>
+            <label style={lbl}>Correo electrónico</label>
+            <input type="email" value={newEmail} onChange={e=>setNewEmail(e.target.value)} placeholder="correo@hosser.com" style={inp}/>
+          </div>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label style={lbl}>Contraseña temporal</label>
+          <input type="password" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="Mínimo 6 caracteres" style={inp}/>
+        </div>
+        <button onClick={createUser} disabled={creating} style={{width:"100%",padding:"11px 0",borderRadius:10,border:"none",background:"linear-gradient(135deg,#16A34A,#15803d)",color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer"}}>
+          {creating?"Creando...":"➕ Crear usuario"}
+        </button>
+      </div>
+
+      {/* Lista usuarios */}
+      <div style={{background:C.panel,borderRadius:14,padding:16,border:"1px solid "+C.border}}>
+        <div style={{fontSize:11,fontWeight:700,color:C.blue,textTransform:"uppercase",letterSpacing:.5,marginBottom:12}}>
+          Usuarios registrados
+          <span style={{marginLeft:8,fontSize:10,color:C.muted,fontWeight:400,textTransform:"none"}}>{users.length} usuario{users.length!==1?"s":""}</span>
+        </div>
+        {loading&&<div style={{textAlign:"center",color:C.muted,padding:20}}>Cargando...</div>}
+        {!loading&&users.length===0&&<div style={{textAlign:"center",color:C.muted,padding:20,fontSize:12}}>No hay usuarios registrados aún.</div>}
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {users.map(u=>(
+            <div key={u.uid} style={{background:C.header,borderRadius:10,padding:"10px 14px",border:"1px solid "+C.border}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:36,height:36,borderRadius:"50%",background:"#1E3050",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>
+                    {u.name?u.name[0].toUpperCase():"?"}
+                  </div>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:13,color:C.text}}>{u.name}</div>
+                    <div style={{fontSize:11,color:C.muted}}>{u.email}</div>
+                    {u.createdAt&&<div style={{fontSize:9,color:C.accent,marginTop:2}}>Creado: {new Date(u.createdAt).toLocaleDateString("es-CO")}</div>}
+                    {u.passUpdated&&<div style={{fontSize:9,color:C.green,marginTop:2}}>Contraseña actualizada: {new Date(u.passUpdated).toLocaleDateString("es-CO")}</div>}
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:6,flexShrink:0}}>
+                  <button
+                    onClick={()=>{setChangingPass(changingPass===u.uid?null:u.uid);setNewPassVal("");}}
+                    style={{padding:"6px 10px",borderRadius:8,border:"1px solid #2E75B6",background:"transparent",color:"#60A5FA",cursor:"pointer",fontSize:11,fontWeight:700}}
+                  >
+                    🔑 Contraseña
+                  </button>
+                  <button
+                    onClick={()=>deleteUser(u)}
+                    disabled={deleting===u.uid}
+                    style={{padding:"6px 10px",borderRadius:8,border:"none",background:"#3B1A1A",color:"#FCA5A5",cursor:"pointer",fontSize:11,fontWeight:700}}
+                  >
+                    {deleting===u.uid?"...":"🗑️"}
+                  </button>
+                </div>
+              </div>
+              {/* Panel cambiar contraseña */}
+              {changingPass===u.uid&&(
+                <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid "+C.border}}>
+                  <label style={lbl}>Nueva contraseña para {u.name}</label>
+                  <div style={{display:"flex",gap:8,marginTop:4}}>
+                    <input
+                      type="password"
+                      value={newPassVal}
+                      onChange={e=>setNewPassVal(e.target.value)}
+                      placeholder="Mínimo 6 caracteres"
+                      style={{...inp,flex:1}}
+                    />
+                    <button
+                      onClick={()=>changePassword(u)}
+                      disabled={deleting===u.uid+"_pass"}
+                      style={{padding:"10px 14px",borderRadius:8,border:"none",background:"#2E75B6",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:12,whiteSpace:"nowrap"}}
+                    >
+                      {deleting===u.uid+"_pass"?"...":"💾 Guardar"}
+                    </button>
+                    <button
+                      onClick={()=>{setChangingPass(null);setNewPassVal("");}}
+                      style={{padding:"10px 12px",borderRadius:8,border:"1px solid "+C.border,background:"transparent",color:C.muted,cursor:"pointer",fontSize:12}}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div style={{fontSize:10,color:C.muted,marginTop:6,fontStyle:"italic"}}>
+                    💡 La nueva contraseña se aplicará la próxima vez que el usuario inicie sesión.
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:12,fontSize:10,color:C.muted,fontStyle:"italic"}}>
+          💡 Nota: al eliminar un usuario aquí se borra de la base de datos. Para eliminarlo completamente de Firebase Authentication, ve a la consola de Firebase.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MachineManager({
   machines,
   customTasks,
@@ -5227,6 +5488,10 @@ function App() {
     v: "machines",
     l: "Máquinas",
     i: "⚙️"
+  }, {
+    v: "usuarios",
+    l: "Usuarios",
+    i: "👤"
   }, {
     v: "gerencial",
     l: "Gerencial",
@@ -6677,6 +6942,8 @@ function App() {
     onUpdateCustomTasks: updateCustomTasks,
     showToast: showToast,
     askConfirm: askConfirm
+  }), view === "usuarios" && /*#__PURE__*/React.createElement(UserAdmin, {
+    showToast: showToast
   }), view === "gerencial" && /*#__PURE__*/React.createElement("div", {
     className: "fi"
   }, /*#__PURE__*/React.createElement("div", {
